@@ -435,7 +435,8 @@ void ICACHE_FLASH_ATTR
 tcpConnect(uint32 port,uint32 port2)
 {
 
-  const char esp_server_ip[4] = {61,145,163,34};
+  //const char esp_server_ip[4] = {61,145,163,34}; //netseed 国内ip
+	const char esp_server_ip[4] = {52,5,229,128}; //netseed 国外ip
  // const char esp_server_ip[4] = {192,168,10,5};
     esp_conn.type = ESPCONN_TCP;
     esp_conn.state = ESPCONN_NONE;
