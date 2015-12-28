@@ -1,0 +1,388 @@
+/******************************************************************************
+ * Copyright 2013-2014 Espressif Systems (Wuxi)
+ *
+ * FileName: user_main.c
+ *
+ * Description: entry file of user application
+ *
+ * Modification history:
+ *     2014/1/1, v1.0 create this file.
+*******************************************************************************/
+#include "ets_sys.h"
+#include "osapi.h"
+#include "driver/uart.h"
+#include "user_interface.h"
+#include "smartconfig.h"
+#include "espconn.h"
+#include "mem.h"
+#include "user_config.h"
+
+ip_addr_t esp_server_ip;
+LOCAL os_timer_t con;
+LOCAL os_timer_t smartconfig_timer;
+LOCAL os_timer_t test_timer;
+LOCAL os_timer_t udp_send_timer;
+LOCAL struct espconn esp_conn;
+LOCAL os_timer_t client_timer;
+LOCAL  uint8 *udpStr=NULL;
+LOCAL esp_tcp esptcp;
+LOCAL struct espconn user_udp_espconn;
+
+void ICACHE_FLASH_ATTR TCPconnErr(void *arg, sint8 err);
+
+void ICACHE_FLASH_ATTR
+user_udp_send(uint8 *Buffer,int len)
+{
+
+   // const char udp_remote_ip[4] = { 255, 255, 255, 255};
+   // os_memcpy(user_udp_espconn.proto.udp->remote_ip, udp_remote_ip, 4); // ESP8266 udp remote IP need to be set everytime we call espconn_sent
+   // user_udp_espconn.proto.udp->remote_port = UDPORT+1;  // ESP8266 udp remote port need to be set everytime we call espconn_sent
+
+    espconn_sent(&user_udp_espconn, Buffer, len);
+}
+
+void ICACHE_FLASH_ATTR
+udp_sends()
+{
+	os_timer_disarm(&udp_send_timer);
+
+	os_printf("udpData:%s,len:%d\n",udpStr,os_strlen(udpStr));
+	user_udp_send(udpStr,os_strlen(udpStr));
+}
+
+
+LOCAL void ICACHE_FLASH_ATTR
+TcpRecv_cb(void *arg, char *pusrdata, unsigned short length)
+{
+	*(pusrdata+length) = '\0';
+	 //uart0_sendStr(pusrdata);
+	os_printf("tcp_rec_data: %s",pusrdata);
+
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+TcpSent_cb(void *arg)
+{
+    struct espconn *pespconn = arg;
+    os_printf("tcpData_send_succ\n");
+   // udp_sends();
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+registTcpRecSend_cb(void *arg)
+{
+    struct espconn *pesp_conn = arg;
+
+    espconn_regist_recvcb(pesp_conn, TcpRecv_cb);
+    espconn_regist_sentcb(pesp_conn, TcpSent_cb);
+}
+
+
+LOCAL void ICACHE_FLASH_ATTR
+user_dns_found(const char *name, ip_addr_t *ipaddr, void *arg)
+{
+    struct espconn *pespconn = (struct espconn *)arg;
+
+    if (ipaddr == NULL) {
+        os_printf("user__dns_found NULL\n");
+
+        return;
+    }
+
+    os_printf("user__dns_found %d.%d.%d.%d\n",
+            *((uint8 *)&ipaddr->addr), *((uint8 *)&ipaddr->addr + 1),
+            *((uint8 *)&ipaddr->addr + 2), *((uint8 *)&ipaddr->addr + 3));
+
+    if (esp_server_ip.addr == 0 && ipaddr->addr != 0) {
+        os_timer_disarm(&client_timer);
+        esp_server_ip.addr = ipaddr->addr;
+        os_memcpy(pespconn->proto.tcp->remote_ip, &ipaddr->addr, 4);
+    }
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+user__dns_check_cb(void *arg)
+{
+    struct espconn *pespconn = arg;
+
+    os_printf("user_dns_check_cb\n");
+
+    espconn_gethostbyname(pespconn, DOMAIN, &esp_server_ip, user_dns_found);
+
+    os_timer_arm(&client_timer, 1000, 0);
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+user_start_dns(struct espconn *pespconn)
+{
+    esp_server_ip.addr = 0;
+    espconn_gethostbyname(pespconn, DOMAIN, &esp_server_ip, user_dns_found);
+
+    os_timer_disarm(&client_timer);
+    os_timer_setfn(&client_timer, (os_timer_func_t *)user__dns_check_cb, pespconn);
+    os_timer_arm(&client_timer, 1000, 0);
+}
+
+void ICACHE_FLASH_ATTR
+tcpConnect(uint32 port)
+{
+	//os_printf("tcpConnect come in\n");
+    const char esp_server_ip[4] = {192,168,10,4};
+    esp_conn.type = ESPCONN_TCP;
+    esp_conn.state = ESPCONN_NONE;
+    esp_conn.proto.tcp = &esptcp;
+
+  //  user_start_dns(&esp_conn);
+
+    esp_conn.proto.tcp->local_port = 8080;
+    esp_conn.proto.tcp->remote_port = port;
+    os_memcpy(esp_conn.proto.tcp->remote_ip, esp_server_ip, 4); //使用dns,注释
+
+   // conn = &esp_conn;
+
+    espconn_regist_connectcb(&esp_conn, registTcpRecSend_cb);
+    espconn_regist_reconcb(&esp_conn, TCPconnErr);
+    os_printf("tcpSendErrCode:%d\n",espconn_connect(&esp_conn) );
+}
+
+void ICACHE_FLASH_ATTR
+tcp_check_ip(void)
+{
+	struct ip_info ipconfig;
+	    wifi_get_ip_info(STATION_IF, &ipconfig);
+	 if (wifi_station_get_connect_status() == STATION_GOT_IP && ipconfig.ip.addr != 0) {
+	  //  os_printf("max:%d",espconn_tcp_get_max_con());
+	    tcpConnect(TCPORT);
+	 }else
+	 {
+		 os_timer_disarm(&con);
+		 os_timer_setfn(&con, (os_timer_func_t *)tcp_check_ip, NULL);
+		 os_timer_arm(&con, 100, 0);
+	 }
+}
+void ICACHE_FLASH_ATTR
+tcpCon()
+{
+	tcpConnect(TCPORT);
+}
+
+void ICACHE_FLASH_ATTR
+TCPconnErr(void *arg, sint8 err){
+	os_printf("TCPconnect err\n");
+
+	os_timer_disarm(&con);
+	//os_timer_setfn(&con, (os_timer_func_t *)tcp_check_ip, NULL);
+	os_timer_setfn(&con, (os_timer_func_t *)tcp_check_ip, NULL);
+	os_timer_arm(&con, 3000, 0);
+}
+
+void ICACHE_FLASH_ATTR
+send(uint8 *str,int len)
+{
+	os_printf("tcpData:%s\n",str);
+
+	if(udpStr==NULL)
+		udpStr = (uint8 *)os_malloc(sizeof(uint8)*(len+1));
+	 os_memcpy(udpStr,str,len+1);
+    //os_printf("udpStr :%s",udpStr);
+	os_printf("tcpSendErrCode:%d\n",espconn_sent(&esp_conn,str,len+1));
+
+	os_timer_disarm(&udp_send_timer);
+	os_timer_setfn(&udp_send_timer, (os_timer_func_t *)udp_sends, NULL); // only send next packet after prev packet sent successfully
+	os_timer_arm(&udp_send_timer, 200, 0);
+}
+
+
+
+/******************************************************************************
+ * FunctionName : user_udp_recv_cb
+ * Description  : Processing the received udp packet
+ * Parameters   : arg -- Additional argument to pass to the callback function
+ *                pusrdata -- The received data (or NULL when the connection has been closed!)
+ *                length -- The length of received data
+ * Returns      : none
+*******************************************************************************/
+LOCAL void ICACHE_FLASH_ATTR
+user_udp_recv_cb(void *arg, char *pusrdata, unsigned short length)
+{
+
+    os_printf("recv udp data: %s\n", pusrdata);
+
+}
+
+/******************************************************************************
+     * FunctionName : user_udp_sent_cb
+     * Description  : udp sent successfully
+     * Parameters  : arg -- Additional argument to pass to the callback function
+     * Returns      : none
+*******************************************************************************/
+ LOCAL void ICACHE_FLASH_ATTR
+ user_udp_sent_cb(void *arg)
+ {
+     struct espconn *pespconn = arg;
+
+     os_printf("user_udp_send successfully !!!\n");
+
+ }
+
+void ICACHE_FLASH_ATTR
+udp_check_ip(void)
+{
+    struct ip_info ipconfig;
+
+   //disarm timer first
+    os_timer_disarm(&test_timer);
+
+   //get ip info of ESP8266 station
+    wifi_get_ip_info(STATION_IF, &ipconfig);
+
+    if (wifi_station_get_connect_status() == STATION_GOT_IP && ipconfig.ip.addr != 0)
+   {
+      //os_printf("udp got ip !!! \r\n");
+
+      //wifi_set_broadcast_if(STATIONAP_MODE); // send UDP broadcast from both station and soft-AP interface
+
+      //os_printf("broadmode:%d\n",wifi_get_broadcast_if());
+
+      user_udp_espconn.type = ESPCONN_UDP;
+      user_udp_espconn.proto.udp = (esp_udp *)os_zalloc(sizeof(esp_udp));
+      user_udp_espconn.proto.udp->local_port = UDPORT; // set a available  port
+
+      const char udp_remote_ip[4] = {255, 255, 255, 255};
+
+      //os_memcpy(user_udp_espconn.proto.udp->remote_ip, udp_remote_ip, 4); // ESP8266 udp remote IP
+
+      //user_udp_espconn.proto.udp->remote_port = UDPORT+1;  // ESP8266 udp remote port
+
+      espconn_regist_recvcb(&user_udp_espconn, user_udp_recv_cb); // register a udp packet receiving callback
+      espconn_regist_sentcb(&user_udp_espconn, user_udp_sent_cb); // register a udp packet sent callback
+
+      espconn_create(&user_udp_espconn);   // create udp
+
+     // user_udp_send("udp hello!!",12);   // send udp data
+
+    }
+   else
+   {
+        if ((wifi_station_get_connect_status() == STATION_WRONG_PASSWORD ||
+                wifi_station_get_connect_status() == STATION_NO_AP_FOUND ||
+                wifi_station_get_connect_status() == STATION_CONNECT_FAIL))
+        {
+         os_printf("udp_connect fail !!! \r\n");
+        }
+      else
+      {
+           //re-arm timer to check ip
+            os_timer_setfn(&test_timer, (os_timer_func_t *)udp_check_ip, NULL);
+            os_timer_arm(&test_timer, 100, 0);
+        }
+    }
+}
+
+
+void ICACHE_FLASH_ATTR
+start(){
+
+	wifi_set_opmode(STATIONAP_MODE);
+#if AP_CACHE
+    wifi_station_ap_number_set(AP_CACHE_NUMBER);
+#endif
+    if(wifi_set_phy_mode(PHY_MODE_11N))
+    	 os_printf("set_phy_mode succ\n");
+
+    os_printf("phy_mode:%d\n",wifi_get_phy_mode());
+
+	os_printf("current mode:%d\n",wifi_get_opmode());
+    struct softap_config config;
+	uint8 password[33];
+
+	uint8 ssid[32];
+
+	wifi_softap_get_config(&config);
+
+	os_printf("pwd:%s\n",config.password);
+	os_printf("ssid_len:%d\n",config.ssid_len);
+	os_printf("beacon_int:%d\n",config.beacon_interval);
+	os_printf("max_con:%d\n",config.max_connection);
+	os_printf("ssid_mode:%d\n",config.authmode);
+
+
+	os_memset(config.password, 0, sizeof(config.password));
+	os_memset(config.ssid, 0, sizeof(config.ssid));
+	os_sprintf(ssid,"%s", "link4all");
+	os_sprintf(password,"%s", PASSWORD);
+	os_memcpy(config.password, password, os_strlen(password));
+	os_memcpy(config.ssid, ssid, os_strlen(ssid));
+	config.ssid_len = os_strlen(ssid);
+	config.authmode =  AUTH_WPA_PSK;//AUTH_WPA_WPA2_PSK;
+	wifi_softap_set_config(&config);
+	//wifi_softap_set_config_current(&config);
+	os_printf("ap_dhcp_status:%d\n",wifi_softap_dhcps_status());
+	os_printf("sta_dhcp_status:%d\n",wifi_station_dhcpc_status());
+
+	/*
+	if(wifi_softap_dhcps_stop())
+		 os_printf("ap_dhcp-stop ucc\n");
+	struct dhcps_lease dhcp_lease;
+	IP4_ADDR(&dhcp_lease.start_ip, 192, 168, 4, 100);
+	IP4_ADDR(&dhcp_lease.end_ip, 192, 168, 4, 105);
+	wifi_softap_set_dhcps_lease(&dhcp_lease);
+	if(wifi_softap_dhcps_start())
+			 os_printf("ap_dhcp-start ucc\n");
+*/
+
+
+	os_printf("is_auto_connect:%d\n",wifi_station_get_auto_connect());
+    os_timer_disarm(&con);
+    os_timer_setfn(&con, (os_timer_func_t *)tcp_check_ip, NULL);
+    os_timer_arm(&con, 100, 0);
+
+    os_timer_disarm(&test_timer);
+    os_timer_setfn(&test_timer, (os_timer_func_t *)udp_check_ip, NULL);
+    os_timer_arm(&test_timer, 1500, 0);
+}
+
+
+
+void ICACHE_FLASH_ATTR
+smartconfig_done(void *data)
+{
+	struct station_config *sta_conf = data;
+	wifi_station_set_config(sta_conf);
+	wifi_station_disconnect();
+	wifi_station_connect();
+	smartconfig_stop();
+	wifi_station_set_auto_connect(1);
+    start();
+    os_printf("ap_dhcp_status2:%d\n",wifi_softap_dhcps_status());
+}
+
+
+void ICACHE_FLASH_ATTR
+isSmartConfig()
+{
+	   if (wifi_station_get_connect_status() == STATION_GOT_IP ||wifi_station_get_connect_status() == STATION_CONNECTING)
+		   start();
+	   else
+	   {
+		   os_printf("start_SmartCnonfig\n");
+		   smartconfig_start(SC_TYPE_ESPTOUCH,smartconfig_done);
+	   }
+}
+
+void user_init(void)
+{
+	    //system_restore();
+
+	   wifi_set_opmode(STATION_MODE);
+
+	   wifi_station_set_auto_connect(1);
+
+	   os_printf("SDK version:%s\n", system_get_sdk_version());
+	   uart_init(BIT_RATE_19200,BIT_RATE_115200);
+
+	   os_timer_disarm(&smartconfig_timer);
+	   os_timer_setfn(&smartconfig_timer, (os_timer_func_t *)isSmartConfig, NULL);
+	   os_timer_arm(&smartconfig_timer, 6000, 0);
+}
+
