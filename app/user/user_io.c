@@ -106,11 +106,11 @@ user_link_led_timer_done(void)
 LOCAL void ICACHE_FLASH_ATTR
 user_plug_short_press(void)
 {
-	user_plug_set_status((~plug_param.status) & 0x01);
-	spi_flash_erase_sector(PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE);
-	spi_flash_write((PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE) * SPI_FLASH_SEC_SIZE,
-	(uint32 *)&plug_param, sizeof(struct plug_saved_param));
-	//os_printf("button short pressed!");
+	//user_plug_set_status((~plug_param.status) & 0x01);
+	//spi_flash_erase_sector(PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE);
+	//spi_flash_write((PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE) * SPI_FLASH_SEC_SIZE,
+	//(uint32 *)&plug_param, sizeof(struct plug_saved_param));
+	os_printf("button short pressed!");
 	//uint8 shortpress_flag=0;
 }
 

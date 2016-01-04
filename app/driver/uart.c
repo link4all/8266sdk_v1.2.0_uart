@@ -303,8 +303,8 @@ uart_recvTask(os_event_t *events)
        // os_printf("send err:%d",espconn_sent(conn,str,fifo_len+1));
 
         //tcp and upd transport
-        user_tcp_send(str,fifo_len);
-        user_udp_send(str,fifo_len);
+        //user_tcp_send(str,fifo_len);
+        //user_udp_send(str,fifo_len);
 
         save_power_level(str);
 

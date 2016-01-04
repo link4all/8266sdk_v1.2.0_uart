@@ -670,11 +670,11 @@ void user_init(void)
 	   os_printf("SDK version:%s\n", system_get_sdk_version());
 	   user_io_init();
 
-	//	os_delay_us(60000);
-		//os_delay_us(60000);
-		//os_delay_us(60000);
-		//os_delay_us(60000);
-	   //init_V9250();
+		os_delay_us(60000);
+		os_delay_us(60000);
+		os_delay_us(60000);
+		os_delay_us(60000);
+	    init_V9250();
 
 	   os_timer_disarm(&smartconfig_timer);
 	   os_timer_setfn(&smartconfig_timer, (os_timer_func_t *)isSmartConfig, NULL);
